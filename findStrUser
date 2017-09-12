@@ -1,0 +1,145 @@
+#!/usr/bin/env python
+#coding=utf-8
+# Version: v1.0
+# Date: 2017/09/12
+# Author: chenxs
+#
+# 参数
+# findStrUser.py [str] [path]
+
+import os
+import sys
+import re
+import commands
+
+mStr = ''
+mPath = ''
+mFourSpace = '    '
+
+def red(sText):
+    return '\033[1;31m' + sText + '\033[0m'
+def green(sText):
+    return '\033[0;32m' + sText + '\033[0m'
+def yellow(sText):
+    return '\033[0;33m' + sText + '\033[0m'
+def magenta(sText):
+    return '\033[0;35m' + sText + '\033[0m'
+def cyan(sText):
+    return '\033[0;36m' + sText + '\033[0m'
+
+def cutArgValue(argStr):
+    if '=' in argStr:
+        return argStr.split('=')[1].rstrip()
+    return ''
+
+def getStrForfind():
+    global mStr
+    global mPath
+
+    mStr = sys.argv[1]
+    if '&' in mStr:
+        mStr = mStr.replace('&', '&amp;')
+
+    mPath = sys.argv[2]
+    if not os.path.exists(mPath):
+        print(yellow('findStrUser.py [str] [path]\n"' + mPath + '" not exists!'))
+        sys.exit(0)
+
+def getCommandOutput(sCommand):
+    (status, output) = commands.getstatusoutput(sCommand)
+    return output
+
+def colorNameAndValue(nameStr, valueStr):
+    colorStr = green(nameStr) + '=' + yellow(valueStr)
+    return colorStr
+
+def colorGrepInfo(infoStr, keyStr):
+    strList = infoStr.split(':')
+    colorStr = magenta(strList[0]) + cyan(':') + green(strList[1]) + cyan(':') + strList[2].replace(keyStr, red(keyStr))
+    return colorStr
+
+def getName():
+    nameStrList = []
+    results = getCommandOutput('find ' + mPath + ' -name *.xml | xargs grep ">\\"\\?' + mStr + '\\"\\?<"').split('\n')
+    for line in results:
+        if line:
+            headIndex = line.find('name="') + 6
+            if headIndex >= 6:
+                nameStr = line[headIndex:]
+                endIndex = nameStr.find('"')
+                if endIndex >= 0:
+                    nameStr = nameStr[0:endIndex]
+                    if (nameStr != '') and (not nameStr in nameStrList):
+                        nameStrList.append(nameStr)
+    return nameStrList
+
+def getXml(nameStr):
+    xmlPathList = []
+    results = getCommandOutput('find ' + mPath + ' -name *.xml | xargs grep "@string/' + nameStr + '" | grep -v strings').split('\n')
+    for result in results:
+        if result:
+            strList = result.split(':')
+            xmlPath = strList[0]
+            if not xmlPath in xmlPathList:
+                xmlPathList.append(xmlPath)
+    return xmlPathList
+
+def getAndroidValue(lineStr):
+    headIndex = lineStr.find('="') + 2
+    lineStr = lineStr[headIndex:]
+    endIndex = lineStr.find('"')
+    lineStr = lineStr[0:endIndex]
+    return lineStr
+
+def getKeyInXml(xmlPath, nameStr):
+    keyStrList = []
+    keyStr = ''
+    with open(xmlPath, 'r') as fp:
+        lines = fp.readlines()
+        for i, line in enumerate(lines):
+            if 'android:key=' in line:
+                keyStr = getAndroidValue(line)
+            if '@string/' + nameStr in line:
+                if (keyStr != '') and (not keyStr in keyStrList):
+                    keyStrList.append(keyStr)
+    return keyStrList
+
+def getLineInJava(keyStr):
+    javaInfoList = []
+    results = getCommandOutput('find ' + mPath + ' -name *.java | xargs grep -n "\\"' + keyStr + '\\"" --color').split('\n')
+    for result in results:
+        if result:
+            javaInfoList.append(result)
+    return javaInfoList
+
+def main():
+    if len(sys.argv) == 3:
+        getStrForfind()
+    else:
+        print(yellow('findStrUser.py [str] [path]'))
+        sys.exit(0)
+
+    nameStrList = getName()
+    if len(nameStrList) > 0:
+        for nameStr in nameStrList:
+            print(colorNameAndValue('name', nameStr))
+
+            xmlPathList = getXml(nameStr)
+            if len(xmlPathList) > 0:
+                for xmlPath in xmlPathList:
+                    print(mFourSpace + colorNameAndValue('xml path', xmlPath))
+
+                    keyStrList = getKeyInXml(xmlPath, nameStr)
+                    if len(keyStrList) > 0:
+                        for keyStr in keyStrList:
+                            print(mFourSpace * 2 + colorNameAndValue('key', keyStr))
+
+                            javaInfoList = getLineInJava(keyStr)
+                            if len(javaInfoList) > 0:
+                                for javaInfo in javaInfoList:
+                                    print(mFourSpace * 3 + colorGrepInfo(javaInfo, keyStr))
+
+
+
+if __name__ == "__main__":
+    main()
