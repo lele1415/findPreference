@@ -1,23 +1,28 @@
 #!/usr/bin/env python
 #coding=utf-8
-# Version: v1.0
-# Date: 2017/09/12
+# Version: v2.0
+# Date: 2017/10/24
 # Author: chenxs
 #
 # 参数
-# findStrUser.py [str] [path]
+# findStrUser [-i] str path
+#   -i 不区分大小写
 
 import os
 import sys
 import re
 import commands
 
+mIgnoreCase = False
 mStr = ''
 mPath = ''
+mSearchStrNamePath = ''
 mFourSpace = '    '
 
-def red(sText):
+def lightRed(sText):
     return '\033[1;31m' + sText + '\033[0m'
+def red(sText):
+    return '\033[0;31m' + sText + '\033[0m'
 def green(sText):
     return '\033[0;32m' + sText + '\033[0m'
 def yellow(sText):
@@ -27,23 +32,41 @@ def magenta(sText):
 def cyan(sText):
     return '\033[0;36m' + sText + '\033[0m'
 
-def cutArgValue(argStr):
-    if '=' in argStr:
-        return argStr.split('=')[1].rstrip()
-    return ''
+def printAndExit():
+    print(yellow('findStrUser [-i] str path'))
+    sys.exit(0)
 
-def getStrForfind():
+def getAllArgs():
+    global mIgnoreCase
     global mStr
     global mPath
 
-    mStr = sys.argv[1]
+    if len(sys.argv) == 4:
+        if '-i' == sys.argv[1]:
+            mIgnoreCase = True
+            mStr = sys.argv[2]
+            mPath = sys.argv[3]
+        elif '-i' == sys.argv[2]:
+            mIgnoreCase = True
+            mStr = sys.argv[1]
+            mPath = sys.argv[3]
+        else:
+            printAndExit()
+    elif len(sys.argv) == 3:
+        mStr = sys.argv[1]
+        mPath = sys.argv[2]
+    else:
+        printAndExit()
+
+
+def checkAllArgs():
+    global mStr
+
     if '&' in mStr:
         mStr = mStr.replace('&', '&amp;')
 
-    mPath = sys.argv[2]
     if not os.path.exists(mPath):
-        print(yellow('findStrUser.py [str] [path]\n"' + mPath + '" not exists!'))
-        sys.exit(0)
+        printAndExit()
 
 def getCommandOutput(sCommand):
     (status, output) = commands.getstatusoutput(sCommand)
@@ -53,32 +76,118 @@ def colorNameAndValue(nameStr, valueStr):
     colorStr = green(nameStr) + '=' + yellow(valueStr)
     return colorStr
 
-def colorGrepInfo(infoStr, keyStr):
-    strList = infoStr.split(':')
-    colorStr = magenta(strList[0]) + cyan(':') + green(strList[1]) + cyan(':') + strList[2].replace(keyStr, red(keyStr))
+def colorGrepInfo(infoStr, strValue, color):
+    if infoStr.find(':') == -1:
+        tmpList = re.findall(r'-[1-9]\d*-', infoStr)
+        tmpStr = tmpList[0].replace("-", ":")
+        infoStr = infoStr.replace(tmpList[0], tmpStr)
+    strList = infoStr.split(':', 2)
+    colorStr = magenta(strList[0]) + cyan(':') + green(strList[1]) + cyan(':') + strList[2].replace(strValue, 
+            lightRed(strValue) if color == 'red' else yellow(strValue))
     return colorStr
 
-def getName():
-    nameStrList = []
-    results = getCommandOutput('find ' + mPath + ' -name *.xml | xargs grep ">\\"\\?' + mStr + '\\"\\?<"').split('\n')
+def getStrGrepResult():
+    global mSearchStrNamePath
+
+    sCommand = 'find ' + mPath + ' -name strings.xml | xargs grep -n ">\\"\\?' + mStr + '\\"\\?</"'
+    if mIgnoreCase:
+        sCommand = sCommand.replace('xargs grep', 'xargs grep -i')
+    results = getCommandOutput(sCommand).split('\n')
+    if len(results) == 1 and results[0] == '':
+        mSearchStrNamePath = 'frameworks/base/core/res/res/'
+        sCommand = sCommand.replace(mPath, mSearchStrNamePath)
+        results = getCommandOutput(sCommand).split('\n')
+    else:
+        mSearchStrNamePath = mPath
+
+    return results
+
+def getPluralsGrepResult():
+    sCommand = 'find ' + mSearchStrNamePath + ' -name strings.xml | xargs grep -A1 -B1 -n ">\\"\\?' + mStr + '\\"\\?</"'
+    if mIgnoreCase:
+        sCommand = sCommand.replace('xargs grep', 'xargs grep -i')
+    results = getCommandOutput(sCommand).split('\n')
+
+    return results
+
+def getFileNameInPath(path):
+    headIndex = path.rindex('/') + 1
+    endIndex = path.rindex('.')
+    return path[headIndex : endIndex]
+
+def cutStr(originStr, headStr, endStr):
+    finalStr = ''
+    lenHeadStr = len(headStr)
+    headIndex = originStr.find(headStr) + lenHeadStr
+    if headIndex >= lenHeadStr:
+        finalStr = originStr[headIndex:]
+        endIndex = finalStr.find(endStr)
+        if endIndex >= 0:
+            finalStr = finalStr[0:endIndex]
+    return finalStr
+
+
+def getStrName():
+    strNameDict = {}
+    pluralsFlag = False
+    strName = ''
+    strValue = ''
+    pluralsResults = []
+
+    results = getStrGrepResult()
+
     for line in results:
         if line:
-            headIndex = line.find('name="') + 6
-            if headIndex >= 6:
-                nameStr = line[headIndex:]
-                endIndex = nameStr.find('"')
-                if endIndex >= 0:
-                    nameStr = nameStr[0:endIndex]
-                    if (nameStr != '') and (not nameStr in nameStrList):
-                        nameStrList.append(nameStr)
-    return nameStrList
+            strName = cutStr(line, 'name="', '"')
+            if (strName != '') and (strName + ' string' not in strNameDict.keys()):
+                strValue = cutStr(line, '>', "</string>")
+                line = line.replace(strName, yellow(strName))
+                line = colorGrepInfo(line, strValue, 'red')
+                strNameDict[strName + ' string'] = line
+            elif 'quantity=' in line:
+                pluralsFlag = True
+
+        if pluralsFlag:
+            if len(pluralsResults) == 0:
+                pluralsResults = getPluralsGrepResult()
+            findFlag = False
+            wholeStr = ''
+            wholeLine = ''
+            for pluralsLine in pluralsResults:
+                if not findFlag:
+                    if 'name=' in pluralsLine:
+                        strName = cutStr(pluralsLine, 'name="', '"')
+                        
+                        if (strName != '') and (strName + ' string' not in strNameDict.keys()):
+                            pluralsLine = pluralsLine.replace(strName, yellow(strName))
+                            pluralsLine = colorGrepInfo(pluralsLine, strName, 'yellow')
+                            wholeLine = pluralsLine
+                            findFlag = True
+
+                elif 'quantity=' in pluralsLine:
+                    wholeStr = cutStr(pluralsLine, '>', "</item>")
+                    pluralsLine = colorGrepInfo(pluralsLine, wholeStr, 'red')
+                    wholeLine = wholeLine + '\n' + pluralsLine
+
+                else:
+                    if wholeStr:
+                        strNameDict[strName + ' plurals'] = wholeLine
+                    wholeStr = ''
+                    wholeLine = ''
+                    findFlag = False
+
+            pluralsFlag = False
+
+    return strNameDict
 
 def getXml(nameStr):
     xmlPathList = []
     results = getCommandOutput('find ' + mPath + ' -name *.xml | xargs grep "@string/' + nameStr + '" | grep -v strings').split('\n')
     for result in results:
         if result:
-            strList = result.split(':')
+            if 'AndroidManifest.xml' in result:
+                continue
+            strList = result.split(':', 1)
             xmlPath = strList[0]
             if not xmlPath in xmlPathList:
                 xmlPathList.append(xmlPath)
@@ -87,57 +196,173 @@ def getXml(nameStr):
 def getAndroidValue(lineStr):
     headIndex = lineStr.find('="') + 2
     lineStr = lineStr[headIndex:]
+    headIndex = lineStr.find('/') + 1
+    lineStr = lineStr[headIndex:]
     endIndex = lineStr.find('"')
     lineStr = lineStr[0:endIndex]
     return lineStr
 
-def getKeyInXml(xmlPath, nameStr):
-    keyStrList = []
-    keyStr = ''
+def addKeyOrIdToList(keyOrIdType, keyOrIdValue, keyOrIdStr, keyOrIdStrList):
+    keyOrIdStrList.append(keyOrIdType + '|split|' + keyOrIdValue + '|split|' + keyOrIdStr)
+    keyOrIdValue = ''
+    keyOrIdStr = ''
+    findStrFlag = False
+    findKeyOrIdFlag = False
+
+def getKeyOrIdInXml(xmlPath, nameStr):
+    keyOrIdStrList = []
+    keyOrIdValue = ''
+    keyOrIdType = ''
+    keyOrIdStr = ''
+    findStrFlag = False
+    findKeyOrIdFlag = False
+    addFlag = False
     with open(xmlPath, 'r') as fp:
         lines = fp.readlines()
-        for i, line in enumerate(lines):
-            if 'android:key=' in line:
-                keyStr = getAndroidValue(line)
-            if '@string/' + nameStr in line:
-                if (keyStr != '') and (not keyStr in keyStrList):
-                    keyStrList.append(keyStr)
-    return keyStrList
+        lines.reverse()
+        for line in lines:
+            if not findStrFlag:
+                if '@string/' + nameStr + '\"' in line:
+                    keyOrIdStr = line.replace(nameStr, yellow(nameStr))
+                    findStrFlag = True
+                    if '<' in line:
+                        keyOrIdType = 'string'
+                        addFlag = True
+            else:
+                if 'android:key=' in line:
+                    keyOrIdType = 'key'
+                    keyOrIdValue = getAndroidValue(line)
+                    line = line.replace(keyOrIdValue, lightRed(keyOrIdValue))
+                    if keyOrIdValue != '':
+                        findKeyOrIdFlag = True
+                        if '<' in line:
+                            addFlag = True
+                    else:
+                        keyOrIdStr = ''
+                        findStrFlag = False
+                elif 'android:id=' in line:
+                    keyOrIdType = 'id'
+                    keyOrIdValue = getAndroidValue(line)
+                    line = line.replace(keyOrIdValue, lightRed(keyOrIdValue))
+                    if keyOrIdValue != '':
+                        findKeyOrIdFlag = True
+                        if '<' in line:
+                            addFlag = True
+                    else:
+                        keyOrIdStr = ''
+                        findStrFlag = False
+                elif ('<' in line):
+                    if keyOrIdType == '':
+                        keyOrIdType = 'string'
+                    addFlag = True
 
-def getLineInJava(keyStr):
+                keyOrIdStr = line + keyOrIdStr
+
+            if addFlag:
+                keyOrIdStrList.append(keyOrIdType + '|split|' + keyOrIdValue + '|split|' + keyOrIdStr + '|split|' + str(findKeyOrIdFlag))
+                keyOrIdValue = ''
+                keyOrIdType = ''
+                keyOrIdStr = ''
+                findStrFlag = False
+                findKeyOrIdFlag = False
+                addFlag = False
+                
+    return keyOrIdStrList
+
+def getLineInJava(strType, strValue):
+    results = []
     javaInfoList = []
-    results = getCommandOutput('find ' + mPath + ' -name *.java | xargs grep -n "\\"' + keyStr + '\\"" --color').split('\n')
+
+    if strType == 'key':
+        results = getCommandOutput('find ' + mPath + ' -name *.java | xargs grep -n "\\"' + strValue + '\\"" --color').split('\n')
+    elif strType == 'id':
+        results = getCommandOutput('find ' + mPath + ' -name *.java | xargs grep -n ".id.' + strValue + '" --color').split('\n')
+    elif strType == 'xml':
+        results = getCommandOutput('find ' + mPath + ' -name *.java | xargs grep -n ".xml.' + strValue + '" --color').split('\n')
+    elif strType == 'string':
+        if mSearchStrNamePath == mPath:
+            results = getCommandOutput('find ' + mPath + ' -name *.java | xargs grep -n ".string.' + strValue + '" --color').split('\n')
+        else:
+            results = getCommandOutput('find frameworks/base/ -name *.java | xargs grep -n ".string.' + strValue + '" --color').split('\n')
+    elif strType == 'plurals':
+        results = getCommandOutput('find ' + mPath + ' -name *.java | xargs grep -n ".plurals.' + strValue + '" --color').split('\n')
+
     for result in results:
         if result:
             javaInfoList.append(result)
     return javaInfoList
 
 def main():
-    if len(sys.argv) == 3:
-        getStrForfind()
-    else:
-        print(yellow('findStrUser.py [str] [path]'))
-        sys.exit(0)
+    getAllArgs()
+    checkAllArgs()
 
-    nameStrList = getName()
-    if len(nameStrList) > 0:
-        for nameStr in nameStrList:
-            print(colorNameAndValue('name', nameStr))
+    strNameDict = {}
+    xmlPathList = []
+    keyOrIdStrInfoList = []
+    javaInfoList = []
+    haveFindKeyOrId = False
 
-            xmlPathList = getXml(nameStr)
-            if len(xmlPathList) > 0:
-                for xmlPath in xmlPathList:
-                    print(mFourSpace + colorNameAndValue('xml path', xmlPath))
+    # find string name
+    strNameDict = getStrName()
+    if len(strNameDict) > 0:
+        for (strInfo, grepStrInfo) in strNameDict.items():
+            tmpList = strInfo.split(' ')
+            strName = tmpList[0]
+            strType = tmpList[1]
+            print(cyan('--------------------------------'))
+            #print(colorNameAndValue(strType + ' value', wholeStr) + ' ' + colorNameAndValue(strType + ' name', strName))
+            print(cyan('find ' + strType + ':'))
+            print(grepStrInfo)
 
-                    keyStrList = getKeyInXml(xmlPath, nameStr)
-                    if len(keyStrList) > 0:
-                        for keyStr in keyStrList:
-                            print(mFourSpace * 2 + colorNameAndValue('key', keyStr))
+            if strType == 'string':
+                # find xml path with string name
+                xmlPathList = getXml(strName)
+                if len(xmlPathList) > 0:
+                    for xmlPath in xmlPathList:
+                        #print(mFourSpace + colorNameAndValue('xml', xmlPath))
+                        print(mFourSpace + cyan('xml path:'))
+                        print(mFourSpace + magenta(xmlPath))
 
-                            javaInfoList = getLineInJava(keyStr)
+                        # find key value of preference in xml
+                        keyOrIdStrInfoList = getKeyOrIdInXml(xmlPath, strName)
+                        if len(keyOrIdStrInfoList) > 0:
+                            for keyOrIdStr in keyOrIdStrInfoList:
+                                tmpList = keyOrIdStr.split('|split|', 3)
+                                keyOrIdType = tmpList[0]
+                                keyOrIdValue = tmpList[1]
+                                keyOrIdStr = tmpList[2]
+                                keyOrIdFindFlag = tmpList[3] == 'True'
+                                #print(mFourSpace * 2 + colorNameAndValue(keyOrIdType, keyOrIdValue))
+                                print(mFourSpace * 2 + cyan(keyOrIdType + ':'))
+                                print(keyOrIdStr)
+
+                                if keyOrIdFindFlag:
+                                    haveFindKeyOrId = True
+                                    # find key value of preference in java
+                                    javaInfoList = getLineInJava(keyOrIdType, keyOrIdValue)
+                                    if len(javaInfoList) > 0:
+                                        print(mFourSpace * 3 + cyan(keyOrIdType + ' in java:'))
+                                        for javaInfo in javaInfoList:
+                                            print(mFourSpace * 3 + colorGrepInfo(javaInfo, keyOrIdValue, 'red'))
+                        if not haveFindKeyOrId:
+                            haveFindKeyOrId = False
+                            # find xml name in java
+                            xmlName = getFileNameInPath(xmlPath)
+                            javaInfoList = getLineInJava('xml', xmlName)
                             if len(javaInfoList) > 0:
+                                print(mFourSpace * 2 + cyan('xml name in java:'))
                                 for javaInfo in javaInfoList:
-                                    print(mFourSpace * 3 + colorGrepInfo(javaInfo, keyStr))
+                                    print(mFourSpace * 2 + colorGrepInfo(javaInfo, xmlName, 'red'))
+
+            # find string name in java
+            if strType == 'string':
+                javaInfoList = getLineInJava('string', strName)
+            elif strType == 'plurals':
+                javaInfoList = getLineInJava('plurals', strName)
+            if len(javaInfoList) > 0:
+                print(mFourSpace + cyan('string name in java:'))
+                for javaInfo in javaInfoList:
+                    print(mFourSpace + colorGrepInfo(javaInfo, strName, 'red'))
 
 
 
